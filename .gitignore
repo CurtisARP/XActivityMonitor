@@ -1,0 +1,13 @@
+# Server-side files
+
+__pycache__/
+*.py[oc]
+wheels/
+*.egg-info
+.venv
+uv.lock
+
+
+# Client-side files
+
+build/
