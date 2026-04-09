@@ -4,8 +4,6 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["flask"]
-[tool.uv.sources]
-flask = { git = "https://github.com/pallets/flask.git" }
-[tool.uv.dependencies]
-flask = { git = "https://github.com/pallets/flask.git" }
+dependencies = [
+    "flask",
+]
