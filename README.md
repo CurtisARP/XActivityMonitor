@@ -5,7 +5,7 @@ The **client** (C) records keyboard and mouse activity on X11 via XRecord, aggre
 ## Project structure
 
 - `client/` — C sources, `include/`, `CMakeLists.txt`
-- `server/` — `api.py`, `pyproject.toml`, `uv.lock`
+- `server/` — `src/` (Flask app), `pyproject.toml`, `uv.lock`
 
 ## Client
 
@@ -66,12 +66,12 @@ Wheel motion is folded into `total_scroll` (X11 buttons 4 and 5).
 
 ## Server
 
-Flask app in `server/api.py`, bound to `0.0.0.0:5000`.
+Flask app in `server/src/main.py`, bound to `0.0.0.0:5000`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Simple text response; **rate-limited** with [Flask-Limiter](https://flask-limiter.readthedocs.io/) |
 | POST | `/frames` | **Requires auth**; validates JSON; appends a row to SQLite and returns `200` |
+| GET | `/activity/summary` | Returns aggregated activity data; **rate-limited** with [Flask-Limiter](https://flask-limiter.readthedocs.io/) |
 
 ### Dependencies and run
 
@@ -80,7 +80,7 @@ Uses **[uv](https://github.com/astral-sh/uv)** (`requires-python >= 3.11` in `py
 ```bash
 cd server
 uv sync
-uv run python api.py
+uv run python -m src.main
 ```
 
 ### Environment variables
@@ -94,10 +94,10 @@ uv run python api.py
 
 ### SQLite
 
-Each accepted POST inserts into table `frames` with server receive time, optional parsed summary columns, and the full `payload_json` text. You can build a read API on top of this table later.
+Each accepted POST inserts into table `activity_summaries` with 5-minute rounded timestamps and the activity counts. The `/activity/summary` endpoint queries this data.
 
 ## End-to-end check
 
-1. Start the server (`uv run python api.py` in `server/`).
+1. Start the server (`uv run python -m src.main` in `server/`).
 2. Set `client/include/config.h` so `API_URL` points at `http://localhost:5000/frames` and `API_KEY` matches `SERVER_API_KEY`.
 3. Run `./build/activity_monitor` from `client/` on an X11 session.

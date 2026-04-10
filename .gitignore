@@ -8,7 +8,7 @@ wheels/
 *.sqlite3
 *.TAG
 *.lock
-.db
+*.db
 .env
 # Client-side files
 
