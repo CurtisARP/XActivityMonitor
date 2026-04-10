@@ -5,9 +5,11 @@ __pycache__/
 wheels/
 *.egg-info
 .venv
-uv.lock
-
-
+*.sqlite3
+*.TAG
+*.lock
+.db
+.env
 # Client-side files
 
 build/
