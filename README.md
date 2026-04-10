@@ -1,13 +1,21 @@
 # Activity Monitor
 
-The **client** (C) captures keyboard and mouse activity via XRecord and periodically POSTs a JSON payload with a wall-clock timestamp and lifetime summary counters. The **server** (Python) is a small Flask app that accepts those POSTs for development and testing.
+The **client** (C) records keyboard and mouse activity on X11 via XRecord, aggregates counts on a fixed sampling interval, and periodically POSTs a JSON snapshot to an HTTP API. The **server** (Python) is a Flask app that authenticates those POSTs, rate-limits the public GET route, and stores each payload in SQLite.
 
 ## Project structure
 
-- `client/`: C source, headers, and `CMakeLists.txt`
-- `server/`: Flask app (`api.py`), `pyproject.toml`, and `uv` lockfile
+- `client/` — C sources, `include/`, `CMakeLists.txt`
+- `server/` — `api.py`, `pyproject.toml`, `uv.lock`
 
 ## Client
+
+### Behavior
+
+- Input events are counted in **atomic** counters from the XRecord thread (no per-frame ring buffer, no mutex on the hot path).
+- On each **sample tick** (`FRAME_INTERVAL_MS`), the main thread reads and zeroes those counters and adds the deltas into in-memory **summary totals** used for the next upload.
+- On each **flush tick** (`FLUSH_INTERVAL_SEC`), the client POSTs **only if there was activity** since the last **successful** send. If the request fails, totals are **not** cleared so the next flush can retry.
+- After a **successful** POST, summary totals are **reset to zero** so the next payload reflects only new activity since that upload.
+- On shutdown, a **forced** final POST is attempted (even if there was no new activity flag), then HTTP resources are torn down.
 
 ### Dependencies (Arch Linux)
 
@@ -15,43 +23,27 @@ The **client** (C) captures keyboard and mouse activity via XRecord and periodic
 sudo pacman -S cmake gcc pkgconf libx11 libxtst libxi curl
 ```
 
-### Build
+### Build and run
 
 ```bash
 cd client
 cmake -S . -B build
 cmake --build build
-```
-
-### Run
-
-```bash
 ./build/activity_monitor
 ```
 
-Requires a running X session (`DISPLAY` set). Point the client at your API with `API_URL` and optional `Authorization` header via `API_KEY` in `client/include/config.h`.
+Requires a running X session (`DISPLAY` set).
 
-## Server
+### Configuration (`client/include/config.h`)
 
-The server is a minimal [Flask](https://flask.palletsprojects.com/) application in `server/api.py`. It listens on **all interfaces** (`0.0.0.0`) on port **5000** and exposes:
+| Symbol | Role |
+|--------|------|
+| `FRAME_INTERVAL_MS` | How often the main loop snapshots atomic counters into summary totals |
+| `FLUSH_INTERVAL_SEC` | How often a POST is considered (still gated on activity / last success) |
+| `API_URL` | POST target, e.g. `http://localhost:5000/frames` |
+| `API_KEY` | Sent as the `Authorization` header; must match the server’s `SERVER_API_KEY` |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Simple health-style response |
-| POST | `/frames` | Accepts JSON from the client; the handler prints the body and returns `200` with a short JSON message |
-
-Dependencies are managed with **[uv](https://github.com/astral-sh/uv)** (`pyproject.toml` pins Python ≥ 3.11 and Flask). From the `server` directory:
-
-```bash
-uv sync
-uv run python api.py
-```
-
-The default client `API_URL` is `http://localhost:5000/frames`, matching this app.
-
-### Request body shape
-
-The client sends JSON like:
+### JSON payload (client → server)
 
 ```json
 {
@@ -67,13 +59,45 @@ The client sends JSON like:
 }
 ```
 
-`timestamp_ms` is Unix time in milliseconds (real-time clock). The `total_*` fields are cumulative lifetime totals since the client started. You can replace `print(data)` in `api.py` with persistence, validation, or forwarding as needed.
+- `timestamp_ms` — wall-clock Unix time in milliseconds when the payload is built.
+- `summary.total_*` — **counts since the last successful upload** (not lifetime). After each successful POST they are cleared on the client.
 
-## Configuration (client)
+Wheel motion is folded into `total_scroll` (X11 buttons 4 and 5).
 
-Edit `client/include/config.h` for:
+## Server
 
-- `FRAME_INTERVAL_MS` — sampling interval for aggregating input
-- `FLUSH_INTERVAL_SEC` — how often to POST (when there was activity since the last successful send)
-- `API_URL` — e.g. `http://localhost:5000/frames`
-- `API_KEY` — sent as the `Authorization` header value
+Flask app in `server/api.py`, bound to `0.0.0.0:5000`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Simple text response; **rate-limited** with [Flask-Limiter](https://flask-limiter.readthedocs.io/) |
+| POST | `/frames` | **Requires auth**; validates JSON; appends a row to SQLite and returns `200` |
+
+### Dependencies and run
+
+Uses **[uv](https://github.com/astral-sh/uv)** (`requires-python >= 3.11` in `pyproject.toml`).
+
+```bash
+cd server
+uv sync
+uv run python api.py
+```
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SERVER_API_KEY` | `secret` | Shared secret; client must send the same value in `Authorization` (plain or `Bearer …`) |
+| `ACTIVITY_DB_PATH` | `activity_monitor.db` | SQLite file path (created next to the process cwd unless you set an absolute path) |
+| `GET_RATE_LIMIT_MAX_REQUESTS` | `30` | Max GET `/` requests per client IP per window |
+| `GET_RATE_LIMIT_WINDOW_SEC` | `60` | Window length in seconds for that limit |
+
+### SQLite
+
+Each accepted POST inserts into table `frames` with server receive time, optional parsed summary columns, and the full `payload_json` text. You can build a read API on top of this table later.
+
+## End-to-end check
+
+1. Start the server (`uv run python api.py` in `server/`).
+2. Set `client/include/config.h` so `API_URL` points at `http://localhost:5000/frames` and `API_KEY` matches `SERVER_API_KEY`.
+3. Run `./build/activity_monitor` from `client/` on an X11 session.
