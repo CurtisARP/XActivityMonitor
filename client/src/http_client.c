@@ -74,10 +74,13 @@ void flush_to_api(int force) {
     curl_easy_setopt(g_curl, CURLOPT_POSTFIELDSIZE, (long)len);
 
     CURLcode res = curl_easy_perform(g_curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "[collector] curl error: %s\n", curl_easy_strerror(res));
-    } else {
-        fprintf(stderr, "[collector] sent timestamp and summary\n");
+    if (res == CURLE_OK) {
+        g_total_lc = 0;
+        g_total_rc = 0;
+        g_total_mc = 0;
+        g_total_sc = 0;
+        g_total_kp = 0;
+        g_total_mm = 0;
         atomic_store_explicit(&g_had_activity, 0, memory_order_release);
     }
 
