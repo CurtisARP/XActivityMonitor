@@ -1,3 +1,4 @@
+import os
 import time
 
 import flask
@@ -13,6 +14,11 @@ app = flask.Flask(__name__)
 CORS(app)
 
 limiter = Limiter(key_func=get_remote_address, app=app, default_limits=[])
+
+
+@app.route("/health")
+def health():
+    return flask.jsonify({"status": "ok"}), 200
 
 
 @app.route("/frames", methods=["POST"])
@@ -60,4 +66,6 @@ def activity_summary():
 
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=5000)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host=host, port=port)
