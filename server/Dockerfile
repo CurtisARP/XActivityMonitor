@@ -3,8 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
-    PORT=3000 \
-    ACTIVITY_DB_PATH=/data/activity_monitor.db
+    PORT=3000
 
 WORKDIR /app
 
