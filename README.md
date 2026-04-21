@@ -5,7 +5,7 @@ The **client** (C) records keyboard and mouse activity on X11 via XRecord, aggre
 ## Project structure
 
 - `client/` — C sources, `include/`, `CMakeLists.txt`
-- `server/` — `src/` (Flask app), `pyproject.toml`, `uv.lock`
+- `server/` — `src/` (Flask app), `Dockerfile`, `pyproject.toml`, `tests/` (unit tests for helpers and DB), `.env.example`
 
 ## Client
 
@@ -40,7 +40,7 @@ Requires a running X session (`DISPLAY` set).
 |--------|------|
 | `FRAME_INTERVAL_MS` | How often the main loop snapshots atomic counters into summary totals |
 | `FLUSH_INTERVAL_SEC` | How often a POST is considered (still gated on activity / last success) |
-| `API_URL` | POST target, e.g. `http://localhost:5000/frames` |
+| `API_URL` | POST target, e.g. `http://localhost:5000/frames` when the server runs locally with default `PORT` |
 | `API_KEY` | Sent as the `Authorization` header; must match the server’s `SERVER_API_KEY` |
 
 ### JSON payload (client → server)
@@ -59,21 +59,24 @@ Requires a running X session (`DISPLAY` set).
 }
 ```
 
-- `timestamp_ms` — wall-clock Unix time in milliseconds when the payload is built.
+- `timestamp_ms` — wall-clock Unix time in milliseconds when the payload is built (the server still records **received** time rounded to 5 minutes for storage).
 - `summary.total_*` — **counts since the last successful upload** (not lifetime). After each successful POST they are cleared on the client.
 
-Wheel motion is folded into `total_scroll` (X11 buttons 4 and 5).
+Wheel motion is folded into `total_scroll` (X11 buttons 4 and 5). The server persists **left/right/middle click**, **keypress**, and **mouse-move** totals (`total_lc`, `total_rc`, `total_mc`, `total_kp`, `total_mm`); it does not store `total_scroll` in SQLite.
 
 ## Server
 
-Flask app in `server/src/main.py`, bound to `0.0.0.0:5000`.
+Flask app in `server/src/main.py`: CORS enabled, [Flask-Limiter](https://flask-limiter.readthedocs.io/) on the public summary route, SQLite via `server/src/db.py`.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/frames` | **Requires auth**; validates JSON; appends a row to SQLite and returns `200` |
-| GET | `/activity/summary` | Returns aggregated activity data; **rate-limited** with [Flask-Limiter](https://flask-limiter.readthedocs.io/) |
+### HTTP API
 
-### Dependencies and run
+| Method | Path | Auth / limits | Description |
+|--------|------|-----------------|-------------|
+| GET | `/health` | none | JSON `{"status":"ok"}` — intended for load balancers and Docker health checks |
+| POST | `/frames` | `Authorization: <SERVER_API_KEY>` or `Authorization: Bearer <SERVER_API_KEY>` | Validates JSON; inserts one row (5-minute rounded receive time and summary ints) |
+| GET | `/activity/summary` | rate-limited per client IP (`GET_RATE_LIMIT_*`) | JSON `rows` for the last **14 days** from `activity_summaries` |
+
+### Dependencies and run (local)
 
 Uses **[uv](https://github.com/astral-sh/uv)** (`requires-python >= 3.11` in `pyproject.toml`).
 
@@ -83,21 +86,55 @@ uv sync
 uv run python -m src.main
 ```
 
+By default the dev server listens on **`0.0.0.0:5000`** unless you set `PORT` (and optionally `HOST`). `init_db()` runs on startup.
+
 ### Environment variables
+
+Names and placeholders also appear in `server/.env.example` for copying into Coolify or a local `.env`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `SERVER_API_KEY` | `secret` | Shared secret; client must send the same value in `Authorization` (plain or `Bearer …`) |
-| `ACTIVITY_DB_PATH` | `activity_monitor.db` | SQLite file path (created next to the process cwd unless you set an absolute path) |
-| `GET_RATE_LIMIT_MAX_REQUESTS` | `30` | Max GET `/` requests per client IP per window |
+| `ACTIVITY_DB_PATH` | `activity_monitor.db` | SQLite file path (relative paths are resolved from the process working directory) |
+| `GET_RATE_LIMIT_MAX_REQUESTS` | `30` | Max GET `/activity/summary` requests per client IP per window |
 | `GET_RATE_LIMIT_WINDOW_SEC` | `60` | Window length in seconds for that limit |
+| `PORT` | `5000` (when not set) | Listen port (`python -m src.main`); Docker/Coolify typically set this (see below) |
+| `HOST` | `0.0.0.0` | Bind address |
+
+### Docker and Coolify
+
+Build context is **`server/`** (the directory that contains the `Dockerfile`).
+
+```bash
+docker build -t activity-monitor-server ./server
+docker run --rm -p 3000:3000 \
+  -e SERVER_API_KEY=your-key \
+  -e ACTIVITY_DB_PATH=/data/activity_monitor.db \
+  -v activity-data:/data \
+  activity-monitor-server
+```
+
+The image defaults to **`PORT=3000`** and **`EXPOSE 3000`** (aligned with Coolify’s default application port). Set **`ACTIVITY_DB_PATH`** to a path under a **mounted volume** (e.g. `/data/...`) if you want the database to survive container replacement.
+
+For **Coolify**: choose the Dockerfile build pack, set **base directory** to `server`, keep the exposed port in sync with `PORT` (default **3000**), add runtime variables from the table above (at minimum **`SERVER_API_KEY`**), and mount persistent storage where `ACTIVITY_DB_PATH` points if you use a custom path.
 
 ### SQLite
 
-Each accepted POST inserts into table `activity_summaries` with 5-minute rounded timestamps and the activity counts. The `/activity/summary` endpoint queries this data.
+Table **`activity_summaries`**: `received_at_ms` (5-minute bucket from server receive time), and integer columns `lc`, `rc`, `mc`, `kp`, `mm`. Inserts may trigger **cleanup** of rows older than 30 days (see `maybe_cleanup` in `server/src/helpers.py`).
+
+### Tests
+
+Unit tests cover **helpers** (`round_to_5min`, `safe_int`, `is_authorized`, `maybe_cleanup`) and **DB** helpers (`init_db`, `insert_activity`, `get_activity_since`), not HTTP routes.
+
+```bash
+cd server
+uv run --with pytest pytest
+```
+
+Dev dependency group: `uv sync --extra dev` then `pytest`.
 
 ## End-to-end check
 
 1. Start the server (`uv run python -m src.main` in `server/`).
-2. Set `client/include/config.h` so `API_URL` points at `http://localhost:5000/frames` and `API_KEY` matches `SERVER_API_KEY`.
+2. Set `client/include/config.h` so `API_URL` points at `http://localhost:5000/frames` (or your deployed URL) and `API_KEY` matches `SERVER_API_KEY`.
 3. Run `./build/activity_monitor` from `client/` on an X11 session.
