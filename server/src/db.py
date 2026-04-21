@@ -1,6 +1,7 @@
 import sqlite3
 
 from .constants import DB_PATH
+from .helpers import maybe_cleanup
 
 
 def get_db():
@@ -40,6 +41,7 @@ def insert_activity(received, lc, rc, mc, kp, mm):
         """,
             (received, lc, rc, mc, kp, mm),
         )
+        maybe_cleanup(conn)
         conn.commit()
     finally:
         conn.close()
